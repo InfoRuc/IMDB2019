@@ -161,7 +161,7 @@ int64_t STARJOIN_CU(column_t *factT, vector_t *DimVec, vector_para *VecParams, v
 
   dataRemSize = n;
   for (int i = 0; i < cudaDeviceNum; i++) {
-    int dataSize = (i == (cudaDeviceNum - 1) ? dataRemSize : dataBlock);
+    /*int dataSize = (i == (cudaDeviceNum - 1) ? dataRemSize : dataBlock);
     checkCuda(cudaSetDevice(i));
 
     dataRemSize -= dataSize;
@@ -172,9 +172,8 @@ int64_t STARJOIN_CU(column_t *factT, vector_t *DimVec, vector_para *VecParams, v
           sizeof(vectorkey_t) * dataSize, cudaMemcpyHostToDevice)); 
 
     tmpPtr += dataSize;
-    mdx_cp += dataSize;
+    mdx_cp += dataSize;*/
 
-    // Time for DimVec transfering and GPU computing
     checkCuda(cudaMemcpy(deviceArgs[i].dev_DimVec, dimVec,
           sizeof(vectorkey_t) * vec_len,  cudaMemcpyHostToDevice)); 
   }
@@ -186,6 +185,9 @@ int64_t STARJOIN_CU(column_t *factT, vector_t *DimVec, vector_para *VecParams, v
     int dataSize = (i == (cudaDeviceNum - 1) ? dataRemSize : dataBlock);
     checkCuda(cudaSetDevice(i));
 
+  //  checkCuda(cudaMemcpy(deviceArgs[i].dev_DimVec, dimVec,
+   //       sizeof(vectorkey_t) * vec_len,  cudaMemcpyHostToDevice)); 
+    
     int numDatastr = dataSize / nstream;
     int numData = dataSize;
     dataRemSize -= dataSize;
@@ -195,10 +197,13 @@ int64_t STARJOIN_CU(column_t *factT, vector_t *DimVec, vector_para *VecParams, v
       tmpDataLen = (j == (nstream - 1) ? numData : numDatastr);
       numData -= numDatastr;
       checkCuda(cudaStreamCreate(&deviceArgs[i].streams[j]));
-      VecFK_FilterJoin<<<BLOCK_NUM, THREAD_NUM, 2 * THREAD_NUM * sizeof(float),
-        deviceArgs[i].streams[j]>>>(deviceArgs[i].dev_data + j * numDatastr,
-            deviceArgs[i].dev_DimVec, deviceArgs[i].dev_MIndex + j * numDatastr, 
-            tmpDataLen, fk_id);
+
+      intkey_t *stream_data = deviceArgs[i].dev_data + j * numDatastr;
+      vectorkey_t *stream_mdx = deviceArgs[i].dev_MIndex + j * numDatastr;
+      
+      checkCuda(cudaMemcpyAsync(stream_data, data + j * numDatastr, tmpDataLen * sizeof(intkey_t), cudaMemcpyHostToDevice, deviceArgs[i].streams[j]));
+      checkCuda(cudaMemcpyAsync(stream_mdx, mIdx + j * numDatastr, tmpDataLen * sizeof(vectorkey_t), cudaMemcpyHostToDevice, deviceArgs[i].streams[j]));
+      VecFK_FilterJoin<<<BLOCK_NUM, THREAD_NUM, 0, deviceArgs[i].streams[j]>>>(stream_data, deviceArgs[i].dev_DimVec, stream_mdx, tmpDataLen, fk_id);
       cudaError_t cudaStatus = cudaGetLastError();
       if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
