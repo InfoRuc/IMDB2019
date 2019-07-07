@@ -32,7 +32,7 @@ vector_t DimVector[4];
 vector_t MeasureIndex;
 double time_sum = 0.0;
 
-static struct vector_para VecParas [] = 
+struct vector_para VecParas[5] = 
 {
   {1, 5, num_date, 1},  
   {1, 5, num_supplier, 1},   //--0 represents bitmap filtering, non-0 represents vector filter by zys
@@ -45,10 +45,9 @@ int startOffsets[4];
 ////////// End of Global Variables /////////////////////
 
 /////////////// Function Declarations /////////////////////
-int64_t STARJOIN_CU(column_t *factT, vector_t *DimVec, vector_para *VecParams,
-    vector_t *MIndex, int nstreams, int filterflag);
-int create_vectors_pk(vector_t * DimVec, vector_para *VecParams, int group_num = 100);
-int load_fact_fk(column_t * FactColumns,vector_para *VecParams, int *lineorder_size);
+int64_t STARJOIN_CU(column_t *factT, vector_t *DimVec, vector_t *MIndex, int nstreams, int filterflag);
+int create_vectors_pk(vector_t * DimVec, int group_num = 100);
+int load_fact_fk(column_t * FactColumns, int *lineorder_size);
 void print_timing(uint64_t total, uint64_t numtuples);
 /////////////// End of Function Declarations ///////////////////
 
@@ -82,13 +81,12 @@ typedef struct {
 
 int main(int argc, char **argv)
 {
-  int64_t results; 
+  //int64_t results; 
   int nstreams = 40;
   int num_lineorder;
-  int firstfilterflag = 0;
   int group_num = 128;
 
-  load_fact_fk(FactColumns, VecParas, &num_lineorder);
+  load_fact_fk(FactColumns, &num_lineorder);
   cout << num_lineorder << " tuples of Fact table loaded!" << endl;
 
   MeasureIndex.column = (vectorkey_t*) malloc(num_lineorder * sizeof(vectorkey_t));
@@ -98,15 +96,14 @@ int main(int argc, char **argv)
     return -1;
   }
 
-  create_vectors_pk(DimVector, VecParas, group_num);
+  create_vectors_pk(DimVector, group_num);
 
   for(int i = 0; i < num_lineorder; i++) 
     MeasureIndex.column[i]=0;
 
   for(int j = 0; j < 4; j++) {
-    firstfilterflag = j;
     if(VecParas[j].selectivity!=0)
-	    results = STARJOIN_CU(&FactColumns[j], &DimVector[j], &VecParas[j], &MeasureIndex, nstreams, firstfilterflag);
+	    STARJOIN_CU(&FactColumns[j], &DimVector[j], &MeasureIndex, nstreams, j);
   }
 
   return 0;
@@ -118,20 +115,20 @@ static __global__ void VecFK_FilterJoin(intkey_t *a, vectorkey_t *b,  vectorkey_
   
   if (fkid == 0) {
     for (int i = bid * THREAD_NUM + tid; i < num_lineorder; i += BLOCK_NUM * THREAD_NUM) {
-      c[i] = a[b[i]];
+      c[i] = b[a[i]];
     }
   } else {
     for (int i = bid * THREAD_NUM + tid; i < num_lineorder; i += BLOCK_NUM * THREAD_NUM) {
-      if(c[i] != -1) c[i] = a[b[i]];
+      if(c[i] != -1) c[i] = b[a[i]];
     }
   }
 }
 
-int64_t STARJOIN_CU(column_t *factT, vector_t *DimVec, vector_para *VecParams, vector_t *MIndex, int nstreams, int filterflag) {
+int64_t STARJOIN_CU(column_t *factT, vector_t *DimVec, vector_t *MIndex, int nstreams, int filterflag) {
   intkey_t *data = factT->column;
   int n = factT->num_tuples;
   int fk_id = filterflag;
-  int vec_len = VecParams[fk_id].num_tuples;
+  int vec_len = VecParas[fk_id].num_tuples;
   vectorkey_t *dimVec = DimVec->column;
   vectorkey_t *mIdx = MIndex->column;
   int64_t result = 0;
@@ -145,7 +142,7 @@ int64_t STARJOIN_CU(column_t *factT, vector_t *DimVec, vector_para *VecParams, v
 
   int dataBlock = n / cudaDeviceNum; 
   int dataRemSize = n;
-  intkey_t *tmpPtr = data;
+  //intkey_t *tmpPtr = data;
   vectorkey_t *mdx_cp = mIdx;
 
   for (int i = 0; i < cudaDeviceNum; i++) {
@@ -243,20 +240,20 @@ int64_t STARJOIN_CU(column_t *factT, vector_t *DimVec, vector_para *VecParams, v
   return result;
 }
 
-int create_vectors_pk(vector_t * DimVec, vector_para *VecParams, int group_num)
+int create_vectors_pk(vector_t * DimVec, int group_num)
 {
   time_t t;
   srand((unsigned) time(&t));
 
   for (int i = 0; i < 4; i++) {
-    DimVec[i].column= (vectorkey_t*) malloc(VecParams[i].num_tuples * sizeof(vectorkey_t));
-    int NaN_num = VecParams[i].selectivity * VecParams[i].num_tuples;
+    DimVec[i].column= (vectorkey_t*) malloc(VecParas[i].num_tuples * sizeof(vectorkey_t));
+    int NaN_num = VecParas[i].selectivity * VecParas[i].num_tuples;
     
-    int offset = VecParams[i].num_tuples / NaN_num;
+    int offset = VecParas[i].num_tuples / NaN_num;
     int nan_id = 0;
-    for (int j = 0; j < VecParams[i].num_tuples; j++) {
+    for (int j = 0; j < VecParas[i].num_tuples; j++) {
       DimVec[i].column[j] = -1;  
-      if (nan_id < VecParams[i].num_tuples)
+      if (nan_id < VecParas[i].num_tuples)
         DimVec[i].column[nan_id] = rand() % group_num;  
       nan_id += offset;
     }
@@ -265,7 +262,7 @@ int create_vectors_pk(vector_t * DimVec, vector_para *VecParams, int group_num)
   return 0;
 }
 
-int load_fact_fk(column_t * FactColumns,vector_para *VecParams, int *lineorder_size) {
+int load_fact_fk(column_t * FactColumns, int *lineorder_size) {
     printf("\nloading fact fk columns...\n");
     char file_number;
     char *filename = (char *) malloc(sizeof(char) * 42);
@@ -306,20 +303,20 @@ int load_fact_fk(column_t * FactColumns,vector_para *VecParams, int *lineorder_s
     startOffsets[2] = info->stat.lo_partkey_min;
     startOffsets[3] = info->stat.lo_custkey_min;
 
-    VecParams[0].num_tuples = info->stat.lo_enddate - info->stat.lo_startdate; 
-    VecParams[1].num_tuples = info->stat.lo_suppkey_max - info->stat.lo_suppkey_min; 
-    VecParams[2].num_tuples = info->stat.lo_partkey_max - info->stat.lo_partkey_min; 
-    VecParams[3].num_tuples = info->stat.lo_custkey_max - info->stat.lo_custkey_min; 
+    VecParas[0].num_tuples = info->stat.lo_enddate - info->stat.lo_startdate + 2; 
+    VecParas[1].num_tuples = info->stat.lo_suppkey_max - info->stat.lo_suppkey_min + 2; 
+    VecParas[2].num_tuples = info->stat.lo_partkey_max - info->stat.lo_partkey_min + 2; 
+    VecParas[3].num_tuples = info->stat.lo_custkey_max - info->stat.lo_custkey_min + 2; 
 
     cout << "[info] table loaded\n";
 
-    column_t tmpcol;
-    intkey_t * tmp;
+    //column_t tmpcol;
+    //intkey_t * tmp;
     int factrows = info->rows;
     *lineorder_size = factrows;
 
     for (int i = 0; i < 4; i++) {
-      if(VecParams[i].selectivity != 0) {
+      if(VecParas[i].selectivity != 0) {
         FactColumns[i].column= (intkey_t*) malloc(factrows * sizeof(intkey_t));
         if (!FactColumns[i].column) { 
           perror("out of memory when creating fact fk column.");
@@ -336,7 +333,7 @@ int load_fact_fk(column_t * FactColumns,vector_para *VecParams, int *lineorder_s
         memcpy(FactColumns[i].column, info->table->lo_custkey, sizeof(intkey_t) * factrows);
       }
 
-     }//--end for if(VecParams[i].selectivity>0)    by zys 
+     }//--end for if(VecParas[i].selectivity>0)    by zys 
     }//--end for table loop by zys
 
     fclose(dataset);
